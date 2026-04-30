@@ -164,15 +164,41 @@
           aspectRatio: window.innerHeight / window.innerWidth
         };
 
-        html5QrCode.start(
-          { facingMode: "environment" },
-          config,
-          sendResult,
-          /* onScanFailure */ function () { /* тихо игнорим — кадры без распознавания — это норма */ }
-        ).then(function () {
-          setStatus('Наведи на баркод. Распознаётся автоматически.');
-        }).catch(function (err) {
-          setStatus('Камера недоступна: ' + (err && err.message ? err.message : err), 'error');
+        // Попытка проверить разрешение камеры через Permissions API до вызова getUserMedia.
+        // Идея: если браузер уже помнит «granted» — Telegram-обёртка может не показать диалог.
+        // Реальность: в большинстве версий Telegram WebView этот API либо отсутствует, либо всегда выдаёт
+        // 'prompt'. Если выдаст 'granted' — эксперимент удался, нет — фолбэк на обычный путь.
+        function tryQueryPermissions() {
+          if (!navigator.permissions || !navigator.permissions.query) {
+            return Promise.resolve(null);
+          }
+          try {
+            return navigator.permissions.query({ name: 'camera' })
+              .then(function (result) { return result.state; })
+              .catch(function () { return null; });
+          } catch (e) {
+            return Promise.resolve(null);
+          }
+        }
+
+        tryQueryPermissions().then(function (state) {
+          if (state === 'granted') {
+            setStatus('Разрешение уже есть, запускаю…');
+          } else if (state) {
+            setStatus('Состояние разрешения: ' + state);
+          }
+          // В любом случае запускаем сканер — html5-qrcode сам вызовет getUserMedia,
+          // и если 'granted' работает — Telegram не покажет диалог.
+          html5QrCode.start(
+            { facingMode: "environment" },
+            config,
+            sendResult,
+            /* onScanFailure */ function () { /* тихо игнорим — кадры без распознавания — это норма */ }
+          ).then(function () {
+            setStatus('Наведи на баркод. Распознаётся автоматически.');
+          }).catch(function (err) {
+            setStatus('Камера недоступна: ' + (err && err.message ? err.message : err), 'error');
+          });
         });
       }
 
