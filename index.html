@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>NotERP Scanner</title>
+  <!-- Telegram Web App SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- html5-qrcode v2.3.8 — стабильная, поддержка QR + 1D (EAN-13, Code 128, UPC) -->
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%;
+      background: #000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden;
+    }
+    body { display: flex; flex-direction: column; }
+
+    #header {
+      padding: 12px 16px;
+      background: rgba(0, 0, 0, 0.7);
+      font-size: 14px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    #reader {
+      flex: 1;
+      width: 100%;
+      position: relative;
+      overflow: hidden;
+    }
+    /* html5-qrcode сам вставит видео внутрь #reader */
+    #reader video { width: 100% !important; height: 100% !important; object-fit: cover; }
+
+    #status {
+      padding: 12px 16px;
+      background: rgba(0, 0, 0, 0.7);
+      font-size: 13px;
+      text-align: center;
+      min-height: 44px;
+      flex-shrink: 0;
+    }
+    #status.error { color: #ff6b6b; }
+    #status.success { color: #51cf66; }
+
+    #cancel-btn {
+      padding: 14px;
+      background: #2c2c2c;
+      color: #fff;
+      border: none;
+      font-size: 16px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    #cancel-btn:active { background: #444; }
+  </style>
+</head>
+<body>
+  <div id="header">📷 Наведи камеру на баркод</div>
+  <div id="reader"></div>
+  <div id="status">Запрашиваю доступ к камере…</div>
+  <button id="cancel-btn" type="button">Отмена</button>
+
+  <script>
+    (function () {
+      // ====== Telegram WebApp init ======
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg) {
+        tg.ready();
+        tg.expand();
+      }
+
+      const statusEl = document.getElementById('status');
+      const cancelBtn = document.getElementById('cancel-btn');
+      let html5QrCode = null;
+      let scanFinished = false;
+
+      function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = cls || '';
+      }
+
+      // ====== Закрытие WebApp ======
+      function closeApp() {
+        if (tg && typeof tg.close === 'function') {
+          tg.close();
+        } else {
+          // фолбэк для запуска вне Telegram (тест в обычном браузере)
+          window.close();
+        }
+      }
+
+      // ====== Отправка результата в бот ======
+      function sendResult(decodedText, decodedResult) {
+        if (scanFinished) return;
+        scanFinished = true;
+
+        const format = (decodedResult
+          && decodedResult.result
+          && decodedResult.result.format
+          && decodedResult.result.format.formatName) || 'UNKNOWN';
+
+        const payload = {
+          code: decodedText,
+          format: format,
+          ts: Date.now()
+        };
+
+        setStatus('✅ Распознано: ' + decodedText, 'success');
+
+        // останавливаем камеру до отправки, чтобы не дёргалась при закрытии
+        const finalize = function () {
+          if (tg && typeof tg.sendData === 'function') {
+            try {
+              tg.sendData(JSON.stringify(payload));
+            } catch (e) {
+              setStatus('Ошибка sendData: ' + e.message, 'error');
+              return;
+            }
+            // после sendData Telegram сам закроет WebApp, но подстрахуемся
+            setTimeout(closeApp, 200);
+          } else {
+            setStatus('Telegram WebApp недоступен. Код: ' + decodedText, 'error');
+          }
+        };
+
+        if (html5QrCode && html5QrCode.isScanning) {
+          html5QrCode.stop().then(finalize).catch(finalize);
+        } else {
+          finalize();
+        }
+      }
+
+      // ====== Старт сканера ======
+      function startScanner() {
+        html5QrCode = new Html5Qrcode("reader", {
+          // явно перечисляем форматы — иначе по дефолту читает только QR
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.QR_CODE,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.ITF,
+            Html5QrcodeSupportedFormats.DATA_MATRIX
+          ],
+          verbose: false
+        });
+
+        const config = {
+          fps: 10,
+          qrbox: function (vw, vh) {
+            // адаптивная рамка: 80% ширины, 30% высоты
+            const w = Math.floor(vw * 0.8);
+            const h = Math.floor(vh * 0.3);
+            return { width: w, height: h };
+          },
+          aspectRatio: window.innerHeight / window.innerWidth
+        };
+
+        html5QrCode.start(
+          { facingMode: "environment" },
+          config,
+          sendResult,
+          /* onScanFailure */ function () { /* тихо игнорим — кадры без распознавания — это норма */ }
+        ).then(function () {
+          setStatus('Наведи на баркод. Распознаётся автоматически.');
+        }).catch(function (err) {
+          setStatus('Камера недоступна: ' + (err && err.message ? err.message : err), 'error');
+        });
+      }
+
+      // ====== Обработчики UI ======
+      cancelBtn.addEventListener('click', function () {
+        scanFinished = true;
+        if (html5QrCode && html5QrCode.isScanning) {
+          html5QrCode.stop().then(closeApp).catch(closeApp);
+        } else {
+          closeApp();
+        }
+      });
+
+      // Запуск после полной загрузки
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startScanner);
+      } else {
+        startScanner();
+      }
+    })();
+  </script>
+</body>
+</html>
