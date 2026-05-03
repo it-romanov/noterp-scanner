@@ -27,7 +27,6 @@
       flex-shrink: 0;
     }
 
-    /* Контейнер видео + оверлеи (счётчик, вспышка) */
     #reader-wrap {
       flex: 1;
       width: 100%;
@@ -37,7 +36,7 @@
     #reader { width: 100%; height: 100%; }
     #reader video { width: 100% !important; height: 100% !important; object-fit: cover; }
 
-    /* Зелёная вспышка-рамка при успешном скане (вспыхивает на 200 мс) */
+    /* Зелёная вспышка-рамка при успешном скане (200мс) — даёт визуальное подтверждение */
     #flash {
       position: absolute;
       top: 0; left: 0; right: 0; bottom: 0;
@@ -49,24 +48,6 @@
     }
     #flash.on { opacity: 1; }
 
-    /* Счётчик сканов крупно в правом верхнем углу */
-    #counter {
-      position: absolute;
-      top: 12px;
-      right: 12px;
-      background: rgba(0, 0, 0, 0.65);
-      color: #51cf66;
-      font-size: 42px;
-      font-weight: 700;
-      line-height: 1;
-      padding: 10px 16px;
-      border-radius: 10px;
-      min-width: 64px;
-      text-align: center;
-      display: none;
-    }
-    #counter.visible { display: block; }
-
     #status {
       padding: 12px 16px;
       background: rgba(0, 0, 0, 0.7);
@@ -77,20 +58,6 @@
     }
     #status.error { color: #ff6b6b; }
     #status.success { color: #51cf66; }
-    #status.dup { color: #ffd43b; }
-
-    /* Последний распознанный код (только в stream-режиме) */
-    #last-code {
-      padding: 8px 16px;
-      background: rgba(0, 0, 0, 0.85);
-      font-size: 14px;
-      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      text-align: center;
-      color: #ddd;
-      flex-shrink: 0;
-      display: none;
-    }
-    #last-code.visible { display: block; }
 
     #cancel-btn {
       padding: 14px;
@@ -105,157 +72,69 @@
   </style>
 </head>
 <body>
-  <div id="header">📷 Наведи камеру на баркод <span id="debug-mode" style="opacity:0.6;font-size:11px;margin-left:8px"></span></div>
+  <div id="header">📷 Наведи камеру на баркод</div>
   <div id="reader-wrap">
     <div id="reader"></div>
     <div id="flash"></div>
-    <div id="counter">0</div>
   </div>
-  <div id="last-code"></div>
   <div id="status">Запрашиваю доступ к камере…</div>
   <button id="cancel-btn" type="button">Отмена</button>
 
   <script>
+    // ============================================================================
+    // NotERP Scanner — single-режим.
+    //
+    // Один скан → sendData(JSON) → Telegram автоматически закрывает Web App
+    // (это документированное поведение sendData для reply-кнопок,
+    // см. https://core.telegram.org/api/bots/webapps — раздел Keyboard Button).
+    //
+    // Контракт payload: {type: "scan_result", code: "<text>", format: "<EAN_13|...>", ts: <ms>}
+    // Поле "type" — для роутинга на handlers/web_app.py::WEB_APP_HANDLERS.
+    //
+    // Stream-режим (накопление + один sendData при «Готово») — отдельная ветка,
+    // запланирована в CLAUDE/scanner/PLAN.md. На текущий момент НЕ реализована
+    // именно потому что Telegram закрывает Web App после каждого sendData
+    // (подтверждено документацией и сессией 03.05.2026).
+    // ============================================================================
     (function () {
-      // ====== Telegram WebApp init ======
       const tg = window.Telegram && window.Telegram.WebApp;
       if (tg) {
         tg.ready();
         tg.expand();
       }
 
-      // ====== Параметры режима из query-string ======
-      // ?mode=single        — один скан, sendData + закрытие (default, обратная совместимость)
-      // ?mode=stream        — непрерывный поток сканов, без закрытия
-      // ?dedup=N            — антидребезг: тот же код не шлётся повторно в течение N секунд
-      //                       (default 0 для single, имеет смысл задавать в stream — обычно 3-5)
-      const params = new URLSearchParams(window.location.search);
-      const MODE = (params.get('mode') || 'single').toLowerCase();
-      const DEDUP_SEC = parseInt(params.get('dedup') || '0', 10) || 0;
-      const IS_STREAM = (MODE === 'stream');
-
-      // Отладочный вывод в шапке — видно и в браузере, и в Telegram WebView.
-      // Нужен, чтобы понять реально ли доходят query-параметры от бота.
-      try {
-        const dbg = document.getElementById('debug-mode');
-        if (dbg) {
-          const fullUrl = window.location.href;
-          const queryPart = window.location.search || '(no query)';
-          dbg.textContent = '[' + MODE + ' dedup=' + DEDUP_SEC + ' q=' + queryPart + ']';
-        }
-      } catch (e) { /* без падения */ }
-
       const statusEl = document.getElementById('status');
       const cancelBtn = document.getElementById('cancel-btn');
       const flashEl = document.getElementById('flash');
-      const counterEl = document.getElementById('counter');
-      const lastCodeEl = document.getElementById('last-code');
       let html5QrCode = null;
-      let scanFinished = false; // используется только в single-режиме
-      let scanCount = 0;
-      // history: { code: timestampMs } — для дедупа в stream
-      const recentCodes = Object.create(null);
+      let scanFinished = false;
 
       function setStatus(text, cls) {
         statusEl.textContent = text;
         statusEl.className = cls || '';
       }
 
-      // ====== Закрытие WebApp ======
       function closeApp() {
         if (tg && typeof tg.close === 'function') {
           tg.close();
         } else {
-          // фолбэк для запуска вне Telegram (тест в обычном браузере)
           window.close();
         }
       }
 
-      // ====== Зелёная вспышка-рамка ======
       function flashOk() {
         flashEl.classList.add('on');
         setTimeout(function () { flashEl.classList.remove('on'); }, 200);
       }
 
-      // ====== Проверка дедупа: вернёт true, если код только что уже летел ======
-      function isDuplicateRecently(code) {
-        if (DEDUP_SEC <= 0) return false;
-        const now = Date.now();
-        const last = recentCodes[code];
-        if (last && (now - last) < DEDUP_SEC * 1000) {
-          return true;
-        }
-        recentCodes[code] = now;
-        // лёгкая чистка — не даём словарю расти бесконечно
-        const keys = Object.keys(recentCodes);
-        if (keys.length > 200) {
-          for (const k of keys) {
-            if (now - recentCodes[k] > DEDUP_SEC * 1000 * 4) delete recentCodes[k];
-          }
-        }
-        return false;
-      }
-
-      // ====== Отправка результата в бот ======
-      // single: один раз, потом закрытие. stream: каждый успешный скан, без закрытия.
       function sendResult(decodedText, decodedResult) {
+        if (scanFinished) return;
+        scanFinished = true;
+
         const format = (decodedResult
           && decodedResult.result
           && decodedResult.result.format
           && decodedResult.result.format.formatName) || 'UNKNOWN';
-
-        // ===== STREAM-режим =====
-        if (IS_STREAM) {
-          // Дедуп: если тот же код летел недавно — визуально подтверждаем, но в бот не шлём
-          if (isDuplicateRecently(decodedText)) {
-            setStatus('↻ Дубль (пропущено): ' + decodedText, 'dup');
-            return;
-          }
-
-          const payload = {
-            type: 'scan_result',
-            code: decodedText,
-            format: format,
-            ts: Date.now()
-          };
-
-          if (tg && typeof tg.sendData === 'function') {
-            try {
-              console.log('[scanner] BEFORE sendData', payload);
-              // ДИАГНОСТИКА: sendData ВРЕМЕННО ОТКЛЮЧЕН.
-              // Цель — проверить, кто закрывает Web App. Если без sendData окно
-              // НЕ закрывается — виноват Telegram, реагирует на sendData.
-              // tg.sendData(JSON.stringify(payload));
-              console.log('[scanner] AFTER sendData (фронт жив)');
-              setTimeout(function () {
-                console.log('[scanner] +500ms после sendData (всё ещё живы)');
-              }, 500);
-            } catch (e) {
-              setStatus('Ошибка sendData: ' + e.message, 'error');
-              return;
-            }
-          } else {
-            setStatus('Telegram WebApp недоступен. Код: ' + decodedText, 'error');
-            return;
-          }
-
-          setStatus('✅ Распознано [DEBUG без sendData]: ' + decodedText + ' (' + format + ')', 'success');
-          // Счётчик и вспышку всё равно покажем — хочется видеть живой ли UI.
-          scanCount += 1;
-          counterEl.textContent = String(scanCount);
-          counterEl.classList.add('visible');
-          lastCodeEl.textContent = decodedText + '  (' + format + ')';
-          lastCodeEl.classList.add('visible');
-          flashOk();
-          // ДИАГНОСТИКА: setStatus выше уже показал вердикт «DEBUG без sendData» — ниже не трогаем.
-          // setStatus('✅ Отправлено в бот. Сканируй следующий.', 'success');
-          return;
-          // Сканер НЕ останавливаем — продолжает стрим.
-        }
-
-        // ===== SINGLE-режим (default, обратная совместимость) =====
-        if (scanFinished) return;
-        scanFinished = true;
 
         const payload = {
           type: 'scan_result',
@@ -275,7 +154,7 @@
               setStatus('Ошибка sendData: ' + e.message, 'error');
               return;
             }
-            // после sendData Telegram сам закроет WebApp, но подстрахуемся
+            // Telegram сам закроет Web App после sendData, страховка на 200мс.
             setTimeout(closeApp, 200);
           } else {
             setStatus('Telegram WebApp недоступен. Код: ' + decodedText, 'error');
@@ -289,10 +168,9 @@
         }
       }
 
-      // ====== Старт сканера ======
       function startScanner() {
         html5QrCode = new Html5Qrcode("reader", {
-          // явно перечисляем форматы — иначе по дефолту читает только QR
+          // Явно перечисляем форматы — иначе по дефолту читает только QR.
           formatsToSupport: [
             Html5QrcodeSupportedFormats.QR_CODE,
             Html5QrcodeSupportedFormats.EAN_13,
@@ -310,61 +188,23 @@
         const config = {
           fps: 10,
           qrbox: function (vw, vh) {
-            // адаптивная рамка: 80% ширины, 30% высоты
-            const w = Math.floor(vw * 0.8);
-            const h = Math.floor(vh * 0.3);
-            return { width: w, height: h };
+            return { width: Math.floor(vw * 0.8), height: Math.floor(vh * 0.3) };
           },
           aspectRatio: window.innerHeight / window.innerWidth
         };
 
-        // Кнопку «Отмена» в stream-режиме переименовываем в «Закрыть» — честнее.
-        if (IS_STREAM) {
-          cancelBtn.textContent = 'Закрыть';
-        }
-
-        // Попытка проверить разрешение камеры через Permissions API до вызова getUserMedia.
-        // В большинстве версий Telegram WebView API либо отсутствует, либо всегда выдаёт 'prompt' —
-        // практически бесполезен, но безвредный try/catch (см. ловушку §21 в NEXT_SESSION.md).
-        function tryQueryPermissions() {
-          if (!navigator.permissions || !navigator.permissions.query) {
-            return Promise.resolve(null);
-          }
-          try {
-            return navigator.permissions.query({ name: 'camera' })
-              .then(function (result) { return result.state; })
-              .catch(function () { return null; });
-          } catch (e) {
-            return Promise.resolve(null);
-          }
-        }
-
-        tryQueryPermissions().then(function (state) {
-          if (state === 'granted') {
-            setStatus('Разрешение уже есть, запускаю…');
-          } else if (state) {
-            setStatus('Состояние разрешения: ' + state);
-          }
-          // В любом случае запускаем сканер — html5-qrcode сам вызовет getUserMedia,
-          // и если 'granted' работает — Telegram не покажет диалог.
-          html5QrCode.start(
-            { facingMode: "environment" },
-            config,
-            sendResult,
-            /* onScanFailure */ function () { /* тихо игнорим — кадры без распознавания — это норма */ }
-          ).then(function () {
-            if (IS_STREAM) {
-              setStatus('Наведи на баркод. Сканирую все подряд.');
-            } else {
-              setStatus('Наведи на баркод. Распознаётся автоматически.');
-            }
-          }).catch(function (err) {
-            setStatus('Камера недоступна: ' + (err && err.message ? err.message : err), 'error');
-          });
+        html5QrCode.start(
+          { facingMode: "environment" },
+          config,
+          sendResult,
+          /* onScanFailure */ function () { /* кадры без распознавания — это норма */ }
+        ).then(function () {
+          setStatus('Наведи на баркод. Распознаётся автоматически.');
+        }).catch(function (err) {
+          setStatus('Камера недоступна: ' + (err && err.message ? err.message : err), 'error');
         });
       }
 
-      // ====== Обработчики UI ======
       cancelBtn.addEventListener('click', function () {
         scanFinished = true;
         if (html5QrCode && html5QrCode.isScanning) {
@@ -374,7 +214,6 @@
         }
       });
 
-      // Запуск после полной загрузки
       if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', startScanner);
       } else {
