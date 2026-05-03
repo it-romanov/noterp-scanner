@@ -105,7 +105,7 @@
   </style>
 </head>
 <body>
-  <div id="header">📷 Наведи камеру на баркод</div>
+  <div id="header">📷 Наведи камеру на баркод <span id="debug-mode" style="opacity:0.6;font-size:11px;margin-left:8px"></span></div>
   <div id="reader-wrap">
     <div id="reader"></div>
     <div id="flash"></div>
@@ -133,6 +133,17 @@
       const MODE = (params.get('mode') || 'single').toLowerCase();
       const DEDUP_SEC = parseInt(params.get('dedup') || '0', 10) || 0;
       const IS_STREAM = (MODE === 'stream');
+
+      // Отладочный вывод в шапке — видно и в браузере, и в Telegram WebView.
+      // Нужен, чтобы понять реально ли доходят query-параметры от бота.
+      try {
+        const dbg = document.getElementById('debug-mode');
+        if (dbg) {
+          const fullUrl = window.location.href;
+          const queryPart = window.location.search || '(no query)';
+          dbg.textContent = '[' + MODE + ' dedup=' + DEDUP_SEC + ' q=' + queryPart + ']';
+        }
+      } catch (e) { /* без падения */ }
 
       const statusEl = document.getElementById('status');
       const cancelBtn = document.getElementById('cancel-btn');
