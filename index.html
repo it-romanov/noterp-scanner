@@ -221,7 +221,12 @@
 
           if (tg && typeof tg.sendData === 'function') {
             try {
+              console.log('[scanner] BEFORE sendData', payload);
               tg.sendData(JSON.stringify(payload));
+              console.log('[scanner] AFTER sendData (фронт жив)');
+              setTimeout(function () {
+                console.log('[scanner] +500ms после sendData (всё ещё живы)');
+              }, 500);
             } catch (e) {
               setStatus('Ошибка sendData: ' + e.message, 'error');
               return;
