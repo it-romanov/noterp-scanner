@@ -222,7 +222,10 @@
           if (tg && typeof tg.sendData === 'function') {
             try {
               console.log('[scanner] BEFORE sendData', payload);
-              tg.sendData(JSON.stringify(payload));
+              // ДИАГНОСТИКА: sendData ВРЕМЕННО ОТКЛЮЧЕН.
+              // Цель — проверить, кто закрывает Web App. Если без sendData окно
+              // НЕ закрывается — виноват Telegram, реагирует на sendData.
+              // tg.sendData(JSON.stringify(payload));
               console.log('[scanner] AFTER sendData (фронт жив)');
               setTimeout(function () {
                 console.log('[scanner] +500ms после sendData (всё ещё живы)');
@@ -236,14 +239,16 @@
             return;
           }
 
-          // Визуальная обратная связь: счётчик, вспышка, последний код
+          setStatus('✅ Распознано [DEBUG без sendData]: ' + decodedText + ' (' + format + ')', 'success');
+          // Счётчик и вспышку всё равно покажем — хочется видеть живой ли UI.
           scanCount += 1;
           counterEl.textContent = String(scanCount);
           counterEl.classList.add('visible');
           lastCodeEl.textContent = decodedText + '  (' + format + ')';
           lastCodeEl.classList.add('visible');
           flashOk();
-          setStatus('✅ Отправлено в бот. Сканируй следующий.', 'success');
+          // ДИАГНОСТИКА: setStatus выше уже показал вердикт «DEBUG без sendData» — ниже не трогаем.
+          // setStatus('✅ Отправлено в бот. Сканируй следующий.', 'success');
           return;
           // Сканер НЕ останавливаем — продолжает стрим.
         }
