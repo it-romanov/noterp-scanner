@@ -225,6 +225,21 @@
       const DEDUP_MS = parseInt(params.get('dedup'), 10) || 2000;       // антидребезг для stream/batch
       const STORAGE_KEY = 'noterp_scanner_batch_v1';                    // ключ localStorage для batch
 
+      // Опциональный фильтр по маске: ?mask=<URL-encoded regex>
+      // Если задан — отфильтровываем все сканы, которые не матчатся. Если regex имеет capture-группу
+      // (или group 1) — в пакет кладётся именно она, без префиксов (полезно для GS1: вырезаем ]C1 и AI 21).
+      // Если маски нет или regex невалидный — фильтр выключён (обратная совместимость).
+      let MASK_RE = null;
+      const maskParam = params.get('mask');
+      if (maskParam) {
+        try {
+          MASK_RE = new RegExp(maskParam);
+        } catch (e) {
+          MASK_RE = null;
+          // Ошибку покажем позже в setStatus, когда DOM будет готов.
+        }
+      }
+
       const tg = window.Telegram && window.Telegram.WebApp;
       if (tg) {
         tg.ready();
@@ -367,6 +382,16 @@
           && decodedResult.result.format.formatName) || 'UNKNOWN';
 
         const now = Date.now();
+
+        // Фильтр по маске: если ?mask=... задан и скан не матчится — молча игнорируем (сканер продолжает работать).
+        // Если маска совпала и в regex есть capture-группа — подменяем decodedText на содержимое group 1.
+        if (MASK_RE) {
+          const m = decodedText.match(MASK_RE);
+          if (!m) return;
+          if (m[1] !== undefined) {
+            decodedText = m[1];
+          }
+        }
 
         // SINGLE: один скан → sendData → закрытие
         if (MODE === 'single') {
