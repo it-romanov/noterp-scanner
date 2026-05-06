@@ -384,12 +384,16 @@
         const now = Date.now();
 
         // Фильтр по маске: если ?mask=... задан и скан не матчится — молча игнорируем (сканер продолжает работать).
-        // Если маска совпала и в regex есть capture-группа — подменяем decodedText на содержимое group 1.
+        // Если маска совпала и в regex есть capture-группы — подменяем decodedText на ПОСЛЕДНЮЮ непустую группу
+        // (это обычно и есть «чистый» результат; все предыдущие группы — опциональные префиксы вроде ]C1).
         if (MASK_RE) {
           const m = decodedText.match(MASK_RE);
           if (!m) return;
-          if (m[1] !== undefined) {
-            decodedText = m[1];
+          for (let i = m.length - 1; i >= 1; i--) {
+            if (m[i] !== undefined && m[i] !== '') {
+              decodedText = m[i];
+              break;
+            }
           }
         }
 
