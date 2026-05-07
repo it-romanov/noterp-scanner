@@ -222,7 +222,12 @@
       // -------------------------------------------------------------------------
       const params = new URLSearchParams(window.location.search);
       const MODE = (params.get('mode') || 'single').toLowerCase();      // single | stream | batch
-      const DEDUP_MS = parseInt(params.get('dedup'), 10) || 2000;       // антидребезг для stream/batch
+      const DEDUP_MS = parseInt(params.get('dedup'), 10) || 2000;       // burst-фильтр для stream/batch
+      // Политика дублей в batch:
+      //   'block' (default) — в пакете не может быть двух одинаковых кодов; повтор «УЖЕ В ПАКЕТЕ». Семантика для серийников.
+      //   'allow'           — один код можно сканить N раз; отсекается только burst через DEDUP_MS. Для штучного товара.
+      // ?dup=block|allow. Дефолт строгий, потому что сейчас приоритетный кейс — серийники Rexton.
+      const DUP_POLICY = (params.get('dup') || 'block').toLowerCase();
       const STORAGE_KEY = 'noterp_scanner_batch_v1';                    // ключ localStorage для batch
 
       // Опциональный фильтр по маске: ?mask=<URL-encoded regex>
@@ -441,16 +446,13 @@
           return;
         }
 
-        // STREAM/BATCH: антидребезг — игнорируем повтор того же кода в течение DEDUP_MS.
-        // ДИАГНОСТИКА (07.05.2026): когда дубль отсекается, показываем в lastCodeEl плашку
-        // «DEDUP Δ=Nмс»; когда скан добавляется — показываем «prev=X» для сравнения. Это нужно
-        // чтобы понять, почему dedup иногда не срабатывает (возможно, html5-qrcode возвращает
-        // слегка разные строки для одной и той же физической наклейки).
-        const prevCode = lastScannedCode;
+        // STREAM/BATCH: burst-фильтр — html5-qrcode на одном физическом скане может выстрелить коллбэком
+        // 2-3 раза за 100-300мс. DEDUP_MS=2000 этого хватает. Это СИЛЬНЕЕ и ОРТОГОНАЛЬНЕЕ чем
+        // DUP_POLICY: burst-фильтр работает всегда, в обоих режимах.
         const delta = lastScannedTs ? (now - lastScannedTs) : -1;
 
         if (decodedText === lastScannedCode && (now - lastScannedTs) < DEDUP_MS) {
-          lastCodeEl.textContent = 'DEDUP ' + decodedText + ' Δ=' + delta + 'мс';
+          lastCodeEl.textContent = 'BURST ' + decodedText + ' Δ=' + delta + 'мс';
           lastCodeEl.classList.add('visible');
           return;
         }
@@ -459,15 +461,19 @@
 
         // BATCH: добавляем в локальный массив, сохраняем
         if (MODE === 'batch') {
+          // DUP_POLICY=block — проверяем, нет ли уже такого кода в пакете.
+          if (DUP_POLICY === 'block' && batch.some(function (i) { return i.code === decodedText; })) {
+            lastCodeEl.textContent = 'УЖЕ В ПАКЕТЕ: ' + decodedText;
+            lastCodeEl.classList.add('visible');
+            return;
+          }
+
           if (batchStartedAt === null) batchStartedAt = new Date(now).toISOString();
 
           batch.push({ code: decodedText, format: format, ts: now });
           saveBatch();
           flashOk();
-          const diagPrev = prevCode === null
-            ? 'first'
-            : (prevCode === decodedText ? 'same+timeout' : 'prev=' + prevCode);
-          lastCodeEl.textContent = decodedText + ' [' + format + '] | ' + diagPrev;
+          lastCodeEl.textContent = decodedText + ' [' + format + ']';
           lastCodeEl.classList.add('visible');
           renderBatch();
           return;
@@ -579,7 +585,8 @@
           /* onScanFailure */ function () { /* кадры без распознавания — это норма */ }
         ).then(function () {
           if (MODE === 'batch') {
-            setStatus('Сканирую в пакет. Дребезг: ' + DEDUP_MS + 'мс. Жми «Отправить» когда готов.');
+            const dupLabel = DUP_POLICY === 'block' ? 'дубли запрещены' : 'дубли разрешены';
+            setStatus('Сканирую в пакет. Burst: ' + DEDUP_MS + 'мс, ' + dupLabel + '. Жми «Отправить» когда готов.');
           } else if (MODE === 'stream') {
             setStatus('Stream-режим (WIP). Дребезг: ' + DEDUP_MS + 'мс.');
           } else {
