@@ -441,8 +441,17 @@
           return;
         }
 
-        // STREAM/BATCH: антидребезг — игнорируем повтор того же кода в течение DEDUP_MS
+        // STREAM/BATCH: антидребезг — игнорируем повтор того же кода в течение DEDUP_MS.
+        // ДИАГНОСТИКА (07.05.2026): когда дубль отсекается, показываем в lastCodeEl плашку
+        // «DEDUP Δ=Nмс»; когда скан добавляется — показываем «prev=X» для сравнения. Это нужно
+        // чтобы понять, почему dedup иногда не срабатывает (возможно, html5-qrcode возвращает
+        // слегка разные строки для одной и той же физической наклейки).
+        const prevCode = lastScannedCode;
+        const delta = lastScannedTs ? (now - lastScannedTs) : -1;
+
         if (decodedText === lastScannedCode && (now - lastScannedTs) < DEDUP_MS) {
+          lastCodeEl.textContent = 'DEDUP ' + decodedText + ' Δ=' + delta + 'мс';
+          lastCodeEl.classList.add('visible');
           return;
         }
         lastScannedCode = decodedText;
@@ -455,7 +464,10 @@
           batch.push({ code: decodedText, format: format, ts: now });
           saveBatch();
           flashOk();
-          lastCodeEl.textContent = decodedText + ' [' + format + ']';
+          const diagPrev = prevCode === null
+            ? 'first'
+            : (prevCode === decodedText ? 'same+timeout' : 'prev=' + prevCode);
+          lastCodeEl.textContent = decodedText + ' [' + format + '] | ' + diagPrev;
           lastCodeEl.classList.add('visible');
           renderBatch();
           return;
