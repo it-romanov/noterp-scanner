@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>NotERP Scanner</title>
+  <!-- Telegram Web App SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- html5-qrcode v2.3.8 — стабильная, поддержка QR + 1D (EAN-13, Code 128, UPC) -->
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%;
+      background: #000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden;
+    }
+    body { display: flex; flex-direction: column; }
+
+    #header {
+      padding: 12px 16px;
+      background: rgba(0, 0, 0, 0.7);
+      font-size: 14px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    #counter {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      background: rgba(0, 0, 0, 0.75);
+      color: #51cf66;
+      font-size: 28px;
+      font-weight: bold;
+      padding: 6px 14px;
+      border-radius: 8px;
+      z-index: 10;
+      display: none;
+    }
+    #counter.visible { display: block; }
+
+    #reader-wrap {
+      flex: 1;
+      width: 100%;
+      position: relative;
+      overflow: hidden;
+      min-height: 250px;
+    }
+    #reader { width: 100%; height: 100%; }
+    #reader video { width: 100% !important; height: 100% !important; object-fit: cover; }
+
+    #flash {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      border: 6px solid #51cf66;
+      box-shadow: inset 0 0 30px rgba(81, 207, 102, 0.6);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 80ms ease-out;
+    }
+    #flash.on { opacity: 1; }
+
+    #last-code {
+      position: absolute;
+      bottom: 8px;
+      left: 8px;
+      right: 8px;
+      background: rgba(0, 0, 0, 0.75);
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-family: "Courier New", Consolas, monospace;
+      font-size: 14px;
+      pointer-events: none;
+      display: none;
+    }
+    #last-code.visible { display: block; }
+
+    #status {
+      padding: 12px 16px;
+      background: rgba(0, 0, 0, 0.7);
+      font-size: 13px;
+      text-align: center;
+      min-height: 44px;
+      flex-shrink: 0;
+    }
+    #status.error { color: #ff6b6b; }
+    #status.success { color: #51cf66; }
+
+    #batch-list {
+      max-height: 35vh;
+      overflow-y: auto;
+      background: #1a1a1a;
+      flex-shrink: 0;
+      display: none;
+    }
+    #batch-list.visible { display: block; }
+    .batch-item {
+      display: flex;
+      align-items: center;
+      padding: 8px 12px;
+      border-bottom: 1px solid #2a2a2a;
+      font-family: "Courier New", Consolas, monospace;
+      font-size: 13px;
+    }
+    .batch-item-num {
+      color: #888;
+      margin-right: 8px;
+      flex-shrink: 0;
+      min-width: 28px;
+    }
+    .batch-item-code {
+      flex: 1;
+      word-break: break-all;
+      color: #fff;
+    }
+    .batch-item-fmt {
+      color: #888;
+      font-size: 11px;
+      margin: 0 8px;
+      flex-shrink: 0;
+    }
+    .batch-item-del {
+      background: #5a2a2a;
+      color: #ff8888;
+      border: none;
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+    .batch-item-del:active { background: #7a3a3a; }
+
+    #batch-buttons {
+      display: none;
+      flex-shrink: 0;
+    }
+    #batch-buttons.visible { display: flex; }
+    .batch-btn {
+      flex: 1;
+      padding: 14px;
+      color: #fff;
+      border: none;
+      font-size: 15px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    #send-btn { background: #2b8a3e; }
+    #send-btn:active { background: #389343; }
+    #send-btn:disabled { background: #1a3a23; color: #555; }
+    #clear-btn { background: #663030; }
+    #clear-btn:active { background: #7a3838; }
+
+    #cancel-btn {
+      padding: 14px;
+      background: #2c2c2c;
+      color: #fff;
+      border: none;
+      font-size: 16px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    #cancel-btn:active { background: #444; }
+  </style>
+</head>
+<body>
+  <div id="header">📷 Загружаю настройки…</div>
+  <div id="reader-wrap">
+    <div id="reader"></div>
+    <div id="flash"></div>
+    <div id="counter">0</div>
+    <div id="last-code"></div>
+  </div>
+  <div id="status">Получаю профиль с сервера…</div>
+
+  <div id="batch-list"></div>
+
+  <div id="batch-buttons">
+    <button id="clear-btn" class="batch-btn" type="button">🗑 Очистить</button>
+    <button id="send-btn" class="batch-btn" type="button">📤 Отправить (0)</button>
+  </div>
+
+  <button id="cancel-btn" type="button">Отмена</button>
+
+  <script>
+    // ============================================================================
+    // NotERP Scanner v3 — все настройки приходят с сервера через API.
+    //
+    // Архитектура (решение 08.05.2026, сессия 11 Core Dev):
+    //   v3 НЕ хранит настройки в query-параметрах. Из query берётся ровно два
+    //   значения: ?profile=<имя> (какой профиль грузить) и ?api=<url> (база API).
+    //   Все остальные настройки (mode/dedup_ms/dup_policy/mask/max_scans/success_feedback)
+    //   приходят ответом эндпоинта GET /api/scanner/profile?name=<имя>.
+    //
+    //   Запрос с заголовком X-Telegram-Init-Data — бэк проверяет подпись Telegram
+    //   (HMAC-SHA256 по BOT_TOKEN), резолвит telegram_id → tenant_id, читает
+    //   _config с override-механикой (тенант перекрывает system) и отдаёт фронту.
+    //
+    //   Если v3 сломается — кнопку можно одной правкой /sql UPDATE вернуть на
+    //   /standalone/?mode=batch&dedup=2000&dup=block&mask=... и работа
+    //   продолжится без бэк-API (там настройки в query, как в v2).
+    //
+    // Контракт ответа /api/scanner/profile:
+    //   200 {
+    //         "name": "batch",
+    //         "settings": {
+    //           "mode": "batch" | "single" | "stream",
+    //           "dedup_ms": 2000,
+    //           "dup_policy": "block" | "allow",
+    //           "mask": "^(?:\]C1)?(21[A-Z0-9]{7})$" | null,
+    //           "max_scans": null | <число>,
+    //           "success_feedback": ["beep"] | []
+    //         },
+    //         "source": "tenant" | "system"
+    //       }
+    //   401 — initData отсутствует или подпись не прошла.
+    //   403 — юзер не зарегистрирован в боте.
+    //   404 — профиль не найден в _config.
+    //   400/500 — клиентская/серверная ошибка.
+    //
+    // sendData-контракт (то, что фронт отправляет в бот) — НЕ изменился по
+    // сравнению с v2:
+    //   single: {type: "scan_result", code, format, ts}
+    //   batch:  {type: "scan_batch", count, codes: [{code, format, ts}], started_at, sent_at}
+    // ============================================================================
+
+    (function () {
+      // -------------------------------------------------------------------------
+      // 1. ССЫЛКИ НА DOM
+      // -------------------------------------------------------------------------
+      const headerEl = document.getElementById('header');
+      const statusEl = document.getElementById('status');
+      const cancelBtn = document.getElementById('cancel-btn');
+      const flashEl = document.getElementById('flash');
+      const counterEl = document.getElementById('counter');
+      const lastCodeEl = document.getElementById('last-code');
+      const batchListEl = document.getElementById('batch-list');
+      const batchButtonsEl = document.getElementById('batch-buttons');
+      const sendBtn = document.getElementById('send-btn');
+      const clearBtn = document.getElementById('clear-btn');
+
+      function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = cls || '';
+      }
+
+      // -------------------------------------------------------------------------
+      // 2. ИНИЦИАЛИЗАЦИЯ TELEGRAM SDK
+      // -------------------------------------------------------------------------
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg) {
+        tg.ready();
+        tg.expand();
+      }
+
+      // -------------------------------------------------------------------------
+      // 3. ПАРСИНГ СТАРТОВЫХ ПАРАМЕТРОВ
+      // -------------------------------------------------------------------------
+      // Из query берём ТОЛЬКО имя профиля и базу API. Всё остальное — из ответа сервера.
+      const params = new URLSearchParams(window.location.search);
+      const PROFILE_NAME = (params.get('profile') || '').trim().toLowerCase();
+      const API_BASE = (params.get('api') || '').replace(/\/+$/, '');
+
+      // -------------------------------------------------------------------------
+      // 4. СОСТОЯНИЕ СКАНЕРА (заполняется после загрузки профиля)
+      // -------------------------------------------------------------------------
+      let MODE = null;
+      let DEDUP_MS = 2000;
+      let DUP_POLICY = 'block';
+      let MASK_RE = null;
+      let MAX_SCANS = null;
+      let SUCCESS_FEEDBACK = [];
+
+      const STORAGE_KEY = 'noterp_scanner_batch_v1';
+
+      let html5QrCode = null;
+      let scanFinished = false;
+      let lastScannedCode = null;
+      let lastScannedTs = 0;
+      let batchStartedAt = null;
+      let batch = [];
+
+      // -------------------------------------------------------------------------
+      // 5. WEB AUDIO API — ПИК НА УСПЕШНЫЙ СКАН
+      // -------------------------------------------------------------------------
+      // Синтезируем короткий тон без внешних файлов. Создаём AudioContext по
+      // первому скану (пользовательский жест уже был — открытие Web App), чтобы
+      // обойти autoplay-policy iOS/Android.
+      let audioCtx = null;
+      function beep() {
+        try {
+          if (!audioCtx) {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) return;
+            audioCtx = new Ctx();
+          }
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.value = 880;          // высокий тон, чтобы был слышен
+          gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.3, audioCtx.currentTime + 0.01);
+          gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.08);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start();
+          osc.stop(audioCtx.currentTime + 0.09);
+        } catch (e) {
+          // Звук не критичен — молча игнорируем (например, пользователь выключил звук системно).
+        }
+      }
+
+      // -------------------------------------------------------------------------
+      // 6. УТИЛИТЫ
+      // -------------------------------------------------------------------------
+      function closeApp() {
+        if (tg && typeof tg.close === 'function') {
+          tg.close();
+        } else {
+          window.close();
+        }
+      }
+
+      function flashOk() {
+        flashEl.classList.add('on');
+        setTimeout(function () { flashEl.classList.remove('on'); }, 200);
+      }
+
+      function feedback() {
+        // Все эффекты успешного скана — визуальные и звуковые.
+        flashOk();
+        if (SUCCESS_FEEDBACK.indexOf('beep') !== -1) {
+          beep();
+        }
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, function (c) {
+          return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+        });
+      }
+
+      // -------------------------------------------------------------------------
+      // 7. ЗАГРУЗКА ПРОФИЛЯ С СЕРВЕРА
+      // -------------------------------------------------------------------------
+      async function loadProfile() {
+        if (!PROFILE_NAME) {
+          setStatus('Ошибка: в URL не указан ?profile=<имя>.', 'error');
+          return null;
+        }
+        if (!API_BASE) {
+          setStatus('Ошибка: в URL не указан ?api=<base>.', 'error');
+          return null;
+        }
+        if (!tg || !tg.initData) {
+          setStatus('Ошибка: Web App открыт вне Telegram (нет initData).', 'error');
+          return null;
+        }
+
+        const url = API_BASE + '/api/scanner/profile?name=' + encodeURIComponent(PROFILE_NAME);
+        try {
+          const resp = await fetch(url, {
+            method: 'GET',
+            headers: {
+              'X-Telegram-Init-Data': tg.initData,
+              'Accept': 'application/json'
+            }
+          });
+
+          if (!resp.ok) {
+            let errText = 'HTTP ' + resp.status;
+            try {
+              const errJson = await resp.json();
+              if (errJson && errJson.error) errText += ': ' + errJson.error;
+            } catch (e) { /* not JSON — оставим как есть */ }
+            setStatus('Сервер отклонил запрос профиля. ' + errText, 'error');
+            return null;
+          }
+
+          const data = await resp.json();
+          if (!data || !data.settings) {
+            setStatus('Сервер вернул пустой профиль.', 'error');
+            return null;
+          }
+          return data;
+        } catch (e) {
+          setStatus('Сеть недоступна: ' + (e && e.message ? e.message : e), 'error');
+          return null;
+        }
+      }
+
+      function applyProfile(profileData) {
+        const s = profileData.settings || {};
+
+        MODE = (s.mode || 'single').toLowerCase();
+        DEDUP_MS = parseInt(s.dedup_ms, 10) || 2000;
+        DUP_POLICY = (s.dup_policy || 'block').toLowerCase();
+        MAX_SCANS = (s.max_scans === null || s.max_scans === undefined) ? null : parseInt(s.max_scans, 10);
+        SUCCESS_FEEDBACK = Array.isArray(s.success_feedback) ? s.success_feedback : [];
+
+        if (s.mask) {
+          try {
+            MASK_RE = new RegExp(s.mask);
+          } catch (e) {
+            MASK_RE = null;
+            // Если маска кривая — продолжаем работать без неё, лишь предупреждаем в статусе.
+            // Фронт «не падает» из-за конфига; в логах бэка профиль виден.
+            setStatus('Внимание: маска в профиле невалидна, фильтр выключен.', 'error');
+          }
+        } else {
+          MASK_RE = null;
+        }
+      }
+
+      // -------------------------------------------------------------------------
+      // 8. BATCH PERSISTENCE (localStorage) — без изменений по сравнению с v2
+      // -------------------------------------------------------------------------
+      function loadBatch() {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) return { codes: [], started_at: null };
+          const parsed = JSON.parse(raw);
+          if (!parsed || !Array.isArray(parsed.codes)) return { codes: [], started_at: null };
+          return parsed;
+        } catch (e) {
+          return { codes: [], started_at: null };
+        }
+      }
+
+      function saveBatch() {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({
+            codes: batch,
+            started_at: batchStartedAt
+          }));
+        } catch (e) { /* noop */ }
+      }
+
+      function clearBatchStorage() {
+        try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* noop */ }
+      }
+
+      // -------------------------------------------------------------------------
+      // 9. РЕНДЕР СПИСКА BATCH
+      // -------------------------------------------------------------------------
+      function renderBatch() {
+        counterEl.textContent = batch.length;
+        counterEl.classList.toggle('visible', batch.length > 0);
+
+        sendBtn.textContent = '📤 Отправить (' + batch.length + ')';
+        sendBtn.disabled = batch.length === 0;
+
+        if (batch.length === 0) {
+          batchListEl.innerHTML = '';
+          return;
+        }
+        const html = batch.slice().reverse().map(function (item, i) {
+          const realIdx = batch.length - 1 - i;
+          const num = realIdx + 1;
+          return '<div class="batch-item">' +
+                   '<span class="batch-item-num">' + num + '.</span>' +
+                   '<span class="batch-item-code">' + escapeHtml(item.code) + '</span>' +
+                   '<span class="batch-item-fmt">' + escapeHtml(item.format) + '</span>' +
+                   '<button class="batch-item-del" data-idx="' + realIdx + '" type="button">✕</button>' +
+                 '</div>';
+        }).join('');
+        batchListEl.innerHTML = html;
+
+        const dels = batchListEl.querySelectorAll('.batch-item-del');
+        for (let i = 0; i < dels.length; i++) {
+          dels[i].addEventListener('click', function (ev) {
+            const idx = parseInt(ev.currentTarget.getAttribute('data-idx'), 10);
+            if (!isNaN(idx) && idx >= 0 && idx < batch.length) {
+              batch.splice(idx, 1);
+              saveBatch();
+              renderBatch();
+            }
+          });
+        }
+      }
+
+      // -------------------------------------------------------------------------
+      // 10. ОБРАБОТЧИК УСПЕШНОГО СКАНА
+      // -------------------------------------------------------------------------
+      function onScanSuccess(decodedText, decodedResult) {
+        const format = (decodedResult
+          && decodedResult.result
+          && decodedResult.result.format
+          && decodedResult.result.format.formatName) || 'UNKNOWN';
+
+        const now = Date.now();
+
+        // Фильтр по маске. Логика та же, что в v2: если в regex есть capture-группы,
+        // подменяем decodedText на ПОСЛЕДНЮЮ непустую группу. GS1-AI оборачиваем в скобки.
+        if (MASK_RE) {
+          const m = decodedText.match(MASK_RE);
+          if (!m) return;
+          for (let i = m.length - 1; i >= 1; i--) {
+            if (m[i] !== undefined && m[i] !== '') {
+              decodedText = m[i];
+              break;
+            }
+          }
+          const gs1 = decodedText.match(/^(\d{2})([A-Z0-9].*)$/);
+          if (gs1) {
+            decodedText = '(' + gs1[1] + ')' + gs1[2];
+          }
+        }
+
+        // SINGLE
+        if (MODE === 'single') {
+          if (scanFinished) return;
+          scanFinished = true;
+
+          const payload = { type: 'scan_result', code: decodedText, format: format, ts: now };
+
+          setStatus('✅ Распознано: ' + decodedText, 'success');
+          feedback();
+
+          const finalize = function () {
+            if (tg && typeof tg.sendData === 'function') {
+              try {
+                tg.sendData(JSON.stringify(payload));
+              } catch (e) {
+                setStatus('Ошибка sendData: ' + e.message, 'error');
+                return;
+              }
+              setTimeout(closeApp, 200);
+            } else {
+              setStatus('Telegram WebApp недоступен. Код: ' + decodedText, 'error');
+            }
+          };
+
+          if (html5QrCode && html5QrCode.isScanning) {
+            html5QrCode.stop().then(finalize).catch(finalize);
+          } else {
+            finalize();
+          }
+          return;
+        }
+
+        // STREAM/BATCH: burst-фильтр (защита от 2-3 коллбэков за 100-300мс на одном скане)
+        const delta = lastScannedTs ? (now - lastScannedTs) : -1;
+        if (decodedText === lastScannedCode && (now - lastScannedTs) < DEDUP_MS) {
+          lastCodeEl.textContent = 'BURST ' + decodedText + ' Δ=' + delta + 'мс';
+          lastCodeEl.classList.add('visible');
+          return;
+        }
+        lastScannedCode = decodedText;
+        lastScannedTs = now;
+
+        // BATCH
+        if (MODE === 'batch') {
+          if (DUP_POLICY === 'block' && batch.some(function (i) { return i.code === decodedText; })) {
+            lastCodeEl.textContent = 'УЖЕ В ПАКЕТЕ: ' + decodedText;
+            lastCodeEl.classList.add('visible');
+            return;
+          }
+
+          if (batchStartedAt === null) batchStartedAt = new Date(now).toISOString();
+
+          batch.push({ code: decodedText, format: format, ts: now });
+          saveBatch();
+          feedback();
+          lastCodeEl.textContent = decodedText + ' [' + format + ']';
+          lastCodeEl.classList.add('visible');
+          renderBatch();
+
+          // max_scans: автоматически отправляем пакет по достижении лимита.
+          // Полезно когда у пакета фиксированный размер (напр., «8 серийников = 1 коробка»).
+          // Если max_scans=null — лимита нет, пользователь жмёт «Отправить» сам.
+          if (MAX_SCANS && batch.length >= MAX_SCANS) {
+            setStatus('Достигнут лимит ' + MAX_SCANS + '. Отправляю автоматически…', 'success');
+            setTimeout(sendBatchAndClose, 300);
+          }
+          return;
+        }
+
+        // STREAM (унаследовано из v2 как WIP — sendData закрывает Web App, фактически работает как single)
+        if (MODE === 'stream') {
+          feedback();
+          counterEl.textContent = (parseInt(counterEl.textContent, 10) || 0) + 1;
+          counterEl.classList.add('visible');
+          lastCodeEl.textContent = decodedText + ' [' + format + ']';
+          lastCodeEl.classList.add('visible');
+
+          const payload = { type: 'scan_result', code: decodedText, format: format, ts: now };
+          if (tg && typeof tg.sendData === 'function') {
+            try { tg.sendData(JSON.stringify(payload)); } catch (e) { /* ignore */ }
+          }
+        }
+      }
+
+      // -------------------------------------------------------------------------
+      // 11. ОТПРАВКА ПАКЕТА (BATCH)
+      // -------------------------------------------------------------------------
+      function sendBatchAndClose() {
+        if (batch.length === 0) {
+          setStatus('Пакет пуст — нечего отправлять.', 'error');
+          return;
+        }
+
+        const payload = {
+          type: 'scan_batch',
+          count: batch.length,
+          started_at: batchStartedAt,
+          sent_at: new Date().toISOString(),
+          codes: batch
+        };
+
+        setStatus('📤 Отправляю ' + batch.length + ' код(ов)…', 'success');
+
+        const finalize = function () {
+          if (tg && typeof tg.sendData === 'function') {
+            try {
+              tg.sendData(JSON.stringify(payload));
+              clearBatchStorage();
+              setTimeout(closeApp, 200);
+            } catch (e) {
+              setStatus('Ошибка sendData: ' + e.message, 'error');
+            }
+          } else {
+            setStatus('Telegram WebApp недоступен. Пакет сохранён локально.', 'error');
+          }
+        };
+
+        if (html5QrCode && html5QrCode.isScanning) {
+          html5QrCode.stop().then(finalize).catch(finalize);
+        } else {
+          finalize();
+        }
+      }
+
+      function clearBatch() {
+        if (batch.length === 0) return;
+        if (!confirm('Очистить пакет (' + batch.length + ' код)? Это нельзя отменить.')) return;
+        batch = [];
+        batchStartedAt = null;
+        clearBatchStorage();
+        lastCodeEl.classList.remove('visible');
+        renderBatch();
+        setStatus('Пакет очищен. Можно сканировать заново.');
+      }
+
+      // -------------------------------------------------------------------------
+      // 12. ИНИЦИАЛИЗАЦИЯ КАМЕРЫ
+      // -------------------------------------------------------------------------
+      function startScanner() {
+        html5QrCode = new Html5Qrcode("reader", {
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.QR_CODE,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.ITF,
+            Html5QrcodeSupportedFormats.DATA_MATRIX
+          ],
+          verbose: false
+        });
+
+        const config = {
+          fps: 10,
+          qrbox: function (vw, vh) {
+            return { width: Math.floor(vw * 0.8), height: Math.floor(vh * 0.3) };
+          },
+          aspectRatio: window.innerHeight / window.innerWidth
+        };
+
+        html5QrCode.start(
+          { facingMode: "environment" },
+          config,
+          onScanSuccess,
+          /* onScanFailure */ function () { /* норма — кадры без распознавания */ }
+        ).then(function () {
+          if (MODE === 'batch') {
+            const dupLabel = DUP_POLICY === 'block' ? 'дубли запрещены' : 'дубли разрешены';
+            const limitLabel = MAX_SCANS ? (', лимит ' + MAX_SCANS) : '';
+            setStatus('Сканирую в пакет. Burst: ' + DEDUP_MS + 'мс, ' + dupLabel + limitLabel + '.');
+          } else if (MODE === 'stream') {
+            setStatus('Stream-режим (WIP). Дребезг: ' + DEDUP_MS + 'мс.');
+          } else {
+            setStatus('Наведи на баркод. Распознаётся автоматически.');
+          }
+        }).catch(function (err) {
+          setStatus('Камера недоступна: ' + (err && err.message ? err.message : err), 'error');
+        });
+      }
+
+      // -------------------------------------------------------------------------
+      // 13. ВЫБОР UI ПОД РЕЖИМ (после применения профиля)
+      // -------------------------------------------------------------------------
+      function setupUiForMode() {
+        if (MODE === 'batch') {
+          headerEl.textContent = '📦 Пакетное сканирование';
+          cancelBtn.style.display = 'none';
+          batchListEl.classList.add('visible');
+          batchButtonsEl.classList.add('visible');
+
+          const restored = loadBatch();
+          if (restored.codes.length > 0) {
+            batch = restored.codes;
+            batchStartedAt = restored.started_at;
+            renderBatch();
+            setStatus('Восстановлен пакет из ' + batch.length + ' код(ов).');
+          } else {
+            renderBatch();
+          }
+
+          sendBtn.addEventListener('click', sendBatchAndClose);
+          clearBtn.addEventListener('click', clearBatch);
+        } else if (MODE === 'stream') {
+          headerEl.textContent = '📷 Stream-режим (WIP)';
+          cancelBtn.textContent = 'Закрыть';
+          cancelBtn.addEventListener('click', function () {
+            scanFinished = true;
+            if (html5QrCode && html5QrCode.isScanning) {
+              html5QrCode.stop().then(closeApp).catch(closeApp);
+            } else {
+              closeApp();
+            }
+          });
+        } else {
+          // SINGLE
+          headerEl.textContent = '📷 Наведи камеру на баркод';
+          cancelBtn.addEventListener('click', function () {
+            scanFinished = true;
+            if (html5QrCode && html5QrCode.isScanning) {
+              html5QrCode.stop().then(closeApp).catch(closeApp);
+            } else {
+              closeApp();
+            }
+          });
+        }
+      }
+
+      // -------------------------------------------------------------------------
+      // 14. СТАРТ — последовательная цепочка: профиль → UI → камера
+      // -------------------------------------------------------------------------
+      async function bootstrap() {
+        const profileData = await loadProfile();
+        if (!profileData) {
+          // Сообщение об ошибке уже показано в setStatus внутри loadProfile.
+          // Сканер не стартуем — без профиля непонятно как работать.
+          return;
+        }
+
+        applyProfile(profileData);
+        setupUiForMode();
+        startScanner();
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', bootstrap);
+      } else {
+        bootstrap();
+      }
+    })();
+  </script>
+</body>
+</html>

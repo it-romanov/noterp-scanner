@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>NotERP Scanner</title>
+  <!-- Telegram Web App SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- html5-qrcode v2.3.8 — стабильная, поддержка QR + 1D (EAN-13, Code 128, UPC) -->
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%;
+      background: #000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden;
+    }
+    body { display: flex; flex-direction: column; }
+
+    #header {
+      padding: 12px 16px;
+      background: rgba(0, 0, 0, 0.7);
+      font-size: 14px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    #counter {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      background: rgba(0, 0, 0, 0.75);
+      color: #51cf66;
+      font-size: 28px;
+      font-weight: bold;
+      padding: 6px 14px;
+      border-radius: 8px;
+      z-index: 10;
+      display: none;
+    }
+    #counter.visible { display: block; }
+
+    #reader-wrap {
+      flex: 1;
+      width: 100%;
+      position: relative;
+      overflow: hidden;
+      min-height: 250px;
+    }
+    #reader { width: 100%; height: 100%; }
+    #reader video { width: 100% !important; height: 100% !important; object-fit: cover; }
+
+    /* Зелёная вспышка-рамка при успешном скане (200мс) — даёт визуальное подтверждение */
+    #flash {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      border: 6px solid #51cf66;
+      box-shadow: inset 0 0 30px rgba(81, 207, 102, 0.6);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 80ms ease-out;
+    }
+    #flash.on { opacity: 1; }
+
+    #last-code {
+      position: absolute;
+      bottom: 8px;
+      left: 8px;
+      right: 8px;
+      background: rgba(0, 0, 0, 0.75);
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-family: "Courier New", Consolas, monospace;
+      font-size: 14px;
+      pointer-events: none;
+      display: none;
+    }
+    #last-code.visible { display: block; }
+
+    #status {
+      padding: 12px 16px;
+      background: rgba(0, 0, 0, 0.7);
+      font-size: 13px;
+      text-align: center;
+      min-height: 44px;
+      flex-shrink: 0;
+    }
+    #status.error { color: #ff6b6b; }
+    #status.success { color: #51cf66; }
+
+    /* Список накопленных кодов в batch-режиме */
+    #batch-list {
+      max-height: 35vh;
+      overflow-y: auto;
+      background: #1a1a1a;
+      flex-shrink: 0;
+      display: none;
+    }
+    #batch-list.visible { display: block; }
+    .batch-item {
+      display: flex;
+      align-items: center;
+      padding: 8px 12px;
+      border-bottom: 1px solid #2a2a2a;
+      font-family: "Courier New", Consolas, monospace;
+      font-size: 13px;
+    }
+    .batch-item-num {
+      color: #888;
+      margin-right: 8px;
+      flex-shrink: 0;
+      min-width: 28px;
+    }
+    .batch-item-code {
+      flex: 1;
+      word-break: break-all;
+      color: #fff;
+    }
+    .batch-item-fmt {
+      color: #888;
+      font-size: 11px;
+      margin: 0 8px;
+      flex-shrink: 0;
+    }
+    .batch-item-del {
+      background: #5a2a2a;
+      color: #ff8888;
+      border: none;
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+    .batch-item-del:active { background: #7a3a3a; }
+
+    /* Кнопочный ряд для batch-режима */
+    #batch-buttons {
+      display: none;
+      flex-shrink: 0;
+    }
+    #batch-buttons.visible { display: flex; }
+    .batch-btn {
+      flex: 1;
+      padding: 14px;
+      color: #fff;
+      border: none;
+      font-size: 15px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    #send-btn { background: #2b8a3e; }
+    #send-btn:active { background: #389343; }
+    #send-btn:disabled { background: #1a3a23; color: #555; }
+    #clear-btn { background: #663030; }
+    #clear-btn:active { background: #7a3838; }
+
+    #cancel-btn {
+      padding: 14px;
+      background: #2c2c2c;
+      color: #fff;
+      border: none;
+      font-size: 16px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    #cancel-btn:active { background: #444; }
+  </style>
+</head>
+<body>
+  <div id="header">📷 Наведи камеру на баркод</div>
+  <div id="reader-wrap">
+    <div id="reader"></div>
+    <div id="flash"></div>
+    <div id="counter">0</div>
+    <div id="last-code"></div>
+  </div>
+  <div id="status">Запрашиваю доступ к камере…</div>
+
+  <!-- Список баркодов в batch-режиме -->
+  <div id="batch-list"></div>
+
+  <!-- Две кнопки в batch-режиме: «Отправить» / «Очистить» -->
+  <div id="batch-buttons">
+    <button id="clear-btn" class="batch-btn" type="button">🗑 Очистить</button>
+    <button id="send-btn" class="batch-btn" type="button">📤 Отправить (0)</button>
+  </div>
+
+  <!-- Одна кнопка в single-режиме: «Отмена» -->
+  <button id="cancel-btn" type="button">Отмена</button>
+
+  <script>
+    // ============================================================================
+    // NotERP Scanner — STANDALONE-копия v2 (заархивирована 08.05.2026).
+    //
+    // Эта версия работает БЕЗ бэк-API: все настройки приходят через query-параметры
+    // (?mode, ?dedup, ?dup, ?mask). Используется как fallback на случай, если
+    // v3 (с API) сломается — одной правкой /sql UPDATE можно вернуть кнопку
+    // на /standalone/?mode=batch&dedup=2000&dup=block&mask=... и заказчик
+    // продолжит сканить. История изменений v2 — в noterp-scanner-frontend/v2/.
+    //
+    // ВНИМАНИЕ: не редактировать. Это архив. Все улучшения — в /v3/.
+    // ============================================================================
+
+    // ============================================================================
+    // NotERP Scanner — три режима.
+    //
+    // SINGLE (default, без query): один скан → sendData → Web App закрывается.
+    //   Контракт: {type: "scan_result", code, format, ts}
+    //
+    // STREAM (?mode=stream&dedup=N): непрерывный поток сканов в чат.
+    //   На каждый успешный скан → sendData → НО Telegram закрывает Web App!
+    //   Эта ветка не прошла финальную проверку — фактически работает как single.
+    //   Помечена как WIP, оставлена для совместимости с пробниками.
+    //
+    // BATCH (?mode=batch&dedup=N): пакетный сбор кодов в локальный массив.
+    //   Все коды копятся на клиенте, пользователь жмёт «Отправить» — один sendData
+    //   с массивом. После этого Telegram закрывает Web App (это нам и нужно).
+    //   Контракт: {type: "scan_batch", codes: [{code, format, ts}, ...], count, started_at, sent_at}
+    //   Persistence: локальный массив сохраняется в localStorage между открытиями
+    //   (если пользователь случайно закрыл Web App — пакет не теряется).
+    //
+    // Ключевое ограничение Telegram (подтверждено сессией 03.05.2026):
+    //   sendData закрывает Web App. Поэтому в stream/batch — только ОДИН sendData
+    //   за всю сессию (в batch — по нажатию «Отправить»).
+    // ============================================================================
+
+    (function () {
+      // -------------------------------------------------------------------------
+      // 1. ПАРСИНГ РЕЖИМА И НАСТРОЕК ИЗ QUERY
+      // -------------------------------------------------------------------------
+      const params = new URLSearchParams(window.location.search);
+      const MODE = (params.get('mode') || 'single').toLowerCase();      // single | stream | batch
+      const DEDUP_MS = parseInt(params.get('dedup'), 10) || 2000;       // burst-фильтр для stream/batch
+      // Политика дублей в batch:
+      //   'block' (default) — в пакете не может быть двух одинаковых кодов; повтор «УЖЕ В ПАКЕТЕ». Семантика для серийников.
+      //   'allow'           — один код можно сканить N раз; отсекается только burst через DEDUP_MS. Для штучного товара.
+      // ?dup=block|allow. Дефолт строгий, потому что сейчас приоритетный кейс — серийники Rexton.
+      const DUP_POLICY = (params.get('dup') || 'block').toLowerCase();
+      const STORAGE_KEY = 'noterp_scanner_batch_v1';                    // ключ localStorage для batch
+
+      // Опциональный фильтр по маске: ?mask=<URL-encoded regex>
+      // Если задан — отфильтровываем все сканы, которые не матчатся. Если regex имеет capture-группу
+      // (или group 1) — в пакет кладётся именно она, без префиксов (полезно для GS1: вырезаем ]C1 и AI 21).
+      // Если маски нет или regex невалидный — фильтр выключён (обратная совместимость).
+      let MASK_RE = null;
+      const maskParam = params.get('mask');
+      if (maskParam) {
+        try {
+          MASK_RE = new RegExp(maskParam);
+        } catch (e) {
+          MASK_RE = null;
+          // Ошибку покажем позже в setStatus, когда DOM будет готов.
+        }
+      }
+
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg) {
+        tg.ready();
+        tg.expand();
+      }
+
+      // -------------------------------------------------------------------------
+      // 2. ССЫЛКИ НА DOM
+      // -------------------------------------------------------------------------
+      const statusEl = document.getElementById('status');
+      const cancelBtn = document.getElementById('cancel-btn');
+      const flashEl = document.getElementById('flash');
+      const counterEl = document.getElementById('counter');
+      const lastCodeEl = document.getElementById('last-code');
+      const batchListEl = document.getElementById('batch-list');
+      const batchButtonsEl = document.getElementById('batch-buttons');
+      const sendBtn = document.getElementById('send-btn');
+      const clearBtn = document.getElementById('clear-btn');
+
+      // -------------------------------------------------------------------------
+      // 3. СОСТОЯНИЕ СКАНЕРА
+      // -------------------------------------------------------------------------
+      let html5QrCode = null;
+      let scanFinished = false;        // true после sendData в single — блокирует повторные коллбэки
+      let lastScannedCode = null;      // для антидребезга (stream/batch)
+      let lastScannedTs = 0;
+      let batchStartedAt = null;       // ISO-таймстамп начала пакета — пишется в payload
+
+      // batch: массив объектов {code, format, ts}
+      let batch = [];
+
+      // -------------------------------------------------------------------------
+      // 4. УТИЛИТЫ
+      // -------------------------------------------------------------------------
+      function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = cls || '';
+      }
+
+      function closeApp() {
+        if (tg && typeof tg.close === 'function') {
+          tg.close();
+        } else {
+          window.close();
+        }
+      }
+
+      function flashOk() {
+        flashEl.classList.add('on');
+        setTimeout(function () { flashEl.classList.remove('on'); }, 200);
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, function (c) {
+          return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+        });
+      }
+
+      // -------------------------------------------------------------------------
+      // 5. BATCH PERSISTENCE (localStorage)
+      // -------------------------------------------------------------------------
+      function loadBatch() {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) return { codes: [], started_at: null };
+          const parsed = JSON.parse(raw);
+          if (!parsed || !Array.isArray(parsed.codes)) return { codes: [], started_at: null };
+          return parsed;
+        } catch (e) {
+          return { codes: [], started_at: null };
+        }
+      }
+
+      function saveBatch() {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({
+            codes: batch,
+            started_at: batchStartedAt
+          }));
+        } catch (e) {
+          // localStorage может быть недоступен (приватный режим, лимиты) — не падаем,
+          // просто пакет не переживёт перезагрузку.
+        }
+      }
+
+      function clearBatchStorage() {
+        try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* noop */ }
+      }
+
+      // -------------------------------------------------------------------------
+      // 6. РЕНДЕР СПИСКА BATCH
+      // -------------------------------------------------------------------------
+      function renderBatch() {
+        // Счётчик в правом верхнем углу
+        counterEl.textContent = batch.length;
+        counterEl.classList.toggle('visible', batch.length > 0);
+
+        // Кнопка «Отправить»
+        sendBtn.textContent = '📤 Отправить (' + batch.length + ')';
+        sendBtn.disabled = batch.length === 0;
+
+        // Список (отрисовка с конца, чтобы свежие сверху)
+        if (batch.length === 0) {
+          batchListEl.innerHTML = '';
+          return;
+        }
+        const html = batch.slice().reverse().map(function (item, i) {
+          const realIdx = batch.length - 1 - i;
+          const num = realIdx + 1;
+          return '<div class="batch-item">' +
+                   '<span class="batch-item-num">' + num + '.</span>' +
+                   '<span class="batch-item-code">' + escapeHtml(item.code) + '</span>' +
+                   '<span class="batch-item-fmt">' + escapeHtml(item.format) + '</span>' +
+                   '<button class="batch-item-del" data-idx="' + realIdx + '" type="button">✕</button>' +
+                 '</div>';
+        }).join('');
+        batchListEl.innerHTML = html;
+
+        // Привязываем удаление
+        const dels = batchListEl.querySelectorAll('.batch-item-del');
+        for (let i = 0; i < dels.length; i++) {
+          dels[i].addEventListener('click', function (ev) {
+            const idx = parseInt(ev.currentTarget.getAttribute('data-idx'), 10);
+            if (!isNaN(idx) && idx >= 0 && idx < batch.length) {
+              batch.splice(idx, 1);
+              saveBatch();
+              renderBatch();
+            }
+          });
+        }
+      }
+
+      // -------------------------------------------------------------------------
+      // 7. ОБРАБОТЧИК УСПЕШНОГО СКАНА
+      // -------------------------------------------------------------------------
+      function onScanSuccess(decodedText, decodedResult) {
+        const format = (decodedResult
+          && decodedResult.result
+          && decodedResult.result.format
+          && decodedResult.result.format.formatName) || 'UNKNOWN';
+
+        const now = Date.now();
+
+        // Фильтр по маске: если ?mask=... задан и скан не матчится — молча игнорируем (сканер продолжает работать).
+        // Если маска совпала и в regex есть capture-группы — подменяем decodedText на ПОСЛЕДНЮЮ непустую группу
+        // (это обычно и есть «чистый» результат; все предыдущие группы — опциональные префиксы вроде ]C1).
+        // GS1-постпроцессинг: если результат начинается с AI (две цифры: 21, 01, 17, 10, ...) — оборачиваем
+        // AI в круглые скобки, чтобы было как на этикетке: 21PLC0215 → (21)PLC0215.
+        if (MASK_RE) {
+          const m = decodedText.match(MASK_RE);
+          if (!m) return;
+          for (let i = m.length - 1; i >= 1; i--) {
+            if (m[i] !== undefined && m[i] !== '') {
+              decodedText = m[i];
+              break;
+            }
+          }
+          // Обёртывание GS1-AI в скобки (визуальный синтакс наклейки).
+          const gs1 = decodedText.match(/^(\d{2})([A-Z0-9].*)$/);
+          if (gs1) {
+            decodedText = '(' + gs1[1] + ')' + gs1[2];
+          }
+        }
+
+        // SINGLE: один скан → sendData → закрытие
+        if (MODE === 'single') {
+          if (scanFinished) return;
+          scanFinished = true;
+
+          const payload = {
+            type: 'scan_result',
+            code: decodedText,
+            format: format,
+            ts: now
+          };
+
+          setStatus('✅ Распознано: ' + decodedText, 'success');
+          flashOk();
+
+          const finalize = function () {
+            if (tg && typeof tg.sendData === 'function') {
+              try {
+                tg.sendData(JSON.stringify(payload));
+              } catch (e) {
+                setStatus('Ошибка sendData: ' + e.message, 'error');
+                return;
+              }
+              setTimeout(closeApp, 200);
+            } else {
+              setStatus('Telegram WebApp недоступен. Код: ' + decodedText, 'error');
+            }
+          };
+
+          if (html5QrCode && html5QrCode.isScanning) {
+            html5QrCode.stop().then(finalize).catch(finalize);
+          } else {
+            finalize();
+          }
+          return;
+        }
+
+        // STREAM/BATCH: burst-фильтр — html5-qrcode на одном физическом скане может выстрелить коллбэком
+        // 2-3 раза за 100-300мс. DEDUP_MS=2000 этого хватает. Это СИЛЬНЕЕ и ОРТОГОНАЛЬНЕЕ чем
+        // DUP_POLICY: burst-фильтр работает всегда, в обоих режимах.
+        const delta = lastScannedTs ? (now - lastScannedTs) : -1;
+
+        if (decodedText === lastScannedCode && (now - lastScannedTs) < DEDUP_MS) {
+          lastCodeEl.textContent = 'BURST ' + decodedText + ' Δ=' + delta + 'мс';
+          lastCodeEl.classList.add('visible');
+          return;
+        }
+        lastScannedCode = decodedText;
+        lastScannedTs = now;
+
+        // BATCH: добавляем в локальный массив, сохраняем
+        if (MODE === 'batch') {
+          // DUP_POLICY=block — проверяем, нет ли уже такого кода в пакете.
+          if (DUP_POLICY === 'block' && batch.some(function (i) { return i.code === decodedText; })) {
+            lastCodeEl.textContent = 'УЖЕ В ПАКЕТЕ: ' + decodedText;
+            lastCodeEl.classList.add('visible');
+            return;
+          }
+
+          if (batchStartedAt === null) batchStartedAt = new Date(now).toISOString();
+
+          batch.push({ code: decodedText, format: format, ts: now });
+          saveBatch();
+          flashOk();
+          lastCodeEl.textContent = decodedText + ' [' + format + ']';
+          lastCodeEl.classList.add('visible');
+          renderBatch();
+          return;
+        }
+
+        // STREAM: отправляем каждый скан как отдельный sendData (закроет Web App!)
+        if (MODE === 'stream') {
+          flashOk();
+          counterEl.textContent = (parseInt(counterEl.textContent, 10) || 0) + 1;
+          counterEl.classList.add('visible');
+          lastCodeEl.textContent = decodedText + ' [' + format + ']';
+          lastCodeEl.classList.add('visible');
+
+          const payload = {
+            type: 'scan_result',
+            code: decodedText,
+            format: format,
+            ts: now
+          };
+          if (tg && typeof tg.sendData === 'function') {
+            try { tg.sendData(JSON.stringify(payload)); } catch (e) { /* ignore */ }
+          }
+        }
+      }
+
+      // -------------------------------------------------------------------------
+      // 8. ОТПРАВКА ПАКЕТА (BATCH)
+      // -------------------------------------------------------------------------
+      function sendBatchAndClose() {
+        if (batch.length === 0) {
+          setStatus('Пакет пуст — нечего отправлять.', 'error');
+          return;
+        }
+
+        const payload = {
+          type: 'scan_batch',
+          count: batch.length,
+          started_at: batchStartedAt,
+          sent_at: new Date().toISOString(),
+          codes: batch
+        };
+
+        setStatus('📤 Отправляю ' + batch.length + ' код(ов)…', 'success');
+
+        const finalize = function () {
+          if (tg && typeof tg.sendData === 'function') {
+            try {
+              tg.sendData(JSON.stringify(payload));
+              clearBatchStorage();   // успешно отправили — чистим локальный буфер
+              setTimeout(closeApp, 200);
+            } catch (e) {
+              setStatus('Ошибка sendData: ' + e.message, 'error');
+            }
+          } else {
+            setStatus('Telegram WebApp недоступен. Пакет сохранён локально.', 'error');
+          }
+        };
+
+        if (html5QrCode && html5QrCode.isScanning) {
+          html5QrCode.stop().then(finalize).catch(finalize);
+        } else {
+          finalize();
+        }
+      }
+
+      function clearBatch() {
+        if (batch.length === 0) return;
+        if (!confirm('Очистить пакет (' + batch.length + ' код)? Это нельзя отменить.')) return;
+        batch = [];
+        batchStartedAt = null;
+        clearBatchStorage();
+        lastCodeEl.classList.remove('visible');
+        renderBatch();
+        setStatus('Пакет очищен. Можно сканировать заново.');
+      }
+
+      // -------------------------------------------------------------------------
+      // 9. ИНИЦИАЛИЗАЦИЯ КАМЕРЫ
+      // -------------------------------------------------------------------------
+      function startScanner() {
+        html5QrCode = new Html5Qrcode("reader", {
+          // Явно перечисляем форматы — иначе по дефолту читает только QR.
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.QR_CODE,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.ITF,
+            Html5QrcodeSupportedFormats.DATA_MATRIX
+          ],
+          verbose: false
+        });
+
+        const config = {
+          fps: 10,
+          qrbox: function (vw, vh) {
+            return { width: Math.floor(vw * 0.8), height: Math.floor(vh * 0.3) };
+          },
+          aspectRatio: window.innerHeight / window.innerWidth
+        };
+
+        html5QrCode.start(
+          { facingMode: "environment" },
+          config,
+          onScanSuccess,
+          /* onScanFailure */ function () { /* кадры без распознавания — это норма */ }
+        ).then(function () {
+          if (MODE === 'batch') {
+            const dupLabel = DUP_POLICY === 'block' ? 'дубли запрещены' : 'дубли разрешены';
+            setStatus('Сканирую в пакет. Burst: ' + DEDUP_MS + 'мс, ' + dupLabel + '. Жми «Отправить» когда готов.');
+          } else if (MODE === 'stream') {
+            setStatus('Stream-режим (WIP). Дребезг: ' + DEDUP_MS + 'мс.');
+          } else {
+            setStatus('Наведи на баркод. Распознаётся автоматически.');
+          }
+        }).catch(function (err) {
+          setStatus('Камера недоступна: ' + (err && err.message ? err.message : err), 'error');
+        });
+      }
+
+      // -------------------------------------------------------------------------
+      // 10. ВЫБОР UI ПОД РЕЖИМ
+      // -------------------------------------------------------------------------
+      if (MODE === 'batch') {
+        document.getElementById('header').textContent = '📦 Пакетное сканирование';
+        cancelBtn.style.display = 'none';
+        batchListEl.classList.add('visible');
+        batchButtonsEl.classList.add('visible');
+
+        // Восстановление из localStorage
+        const restored = loadBatch();
+        if (restored.codes.length > 0) {
+          batch = restored.codes;
+          batchStartedAt = restored.started_at;
+          renderBatch();
+          setStatus('Восстановлен пакет из ' + batch.length + ' код(ов).');
+        } else {
+          renderBatch();
+        }
+
+        sendBtn.addEventListener('click', sendBatchAndClose);
+        clearBtn.addEventListener('click', clearBatch);
+
+        // Кнопка «Закрыть» вместо «Отмена» — но без потери пакета (он в localStorage).
+        // Сделаем небольшую кнопку «Закрыть без отправки» как третью опцию.
+        // Пока обходимся — для закрытия Telegram сам предоставляет крестик в шапке.
+      } else if (MODE === 'stream') {
+        document.getElementById('header').textContent = '📷 Stream-режим (WIP)';
+        cancelBtn.textContent = 'Закрыть';
+        cancelBtn.addEventListener('click', function () {
+          scanFinished = true;
+          if (html5QrCode && html5QrCode.isScanning) {
+            html5QrCode.stop().then(closeApp).catch(closeApp);
+          } else {
+            closeApp();
+          }
+        });
+      } else {
+        // SINGLE
+        cancelBtn.addEventListener('click', function () {
+          scanFinished = true;
+          if (html5QrCode && html5QrCode.isScanning) {
+            html5QrCode.stop().then(closeApp).catch(closeApp);
+          } else {
+            closeApp();
+          }
+        });
+      }
+
+      // -------------------------------------------------------------------------
+      // 11. СТАРТ
+      // -------------------------------------------------------------------------
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startScanner);
+      } else {
+        startScanner();
+      }
+    })();
+  </script>
+</body>
+</html>
